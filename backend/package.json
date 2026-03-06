@@ -1,0 +1,37 @@
+{
+  "name": "gmail-cleanup-backend",
+  "version": "0.1.0",
+  "description": "Safe, AI-assisted Gmail inbox cleanup tool",
+  "main": "src/server.js",
+  "type": "module",
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "NODE_ENV=development node src/server.js",
+    "test": "NODE_OPTIONS=--experimental-vm-modules node --test tests/**/*.test.js",
+    "test:integration": "NODE_OPTIONS=--experimental-vm-modules node --test tests/integration/**/*.test.js",
+    "lint": "eslint src tests --fix",
+    "format": "prettier --write 'src/**/*.js' 'tests/**/*.js'"
+  },
+  "dependencies": {
+    "axios": "^1.6.0",
+    "better-sqlite3": "^9.2.0",
+    "cors": "^2.8.5",
+    "crypto": "^1.0.1",
+    "dotenv": "^16.3.1",
+    "express": "^4.18.2",
+    "express-async-errors": "^3.1.1",
+    "google-auth-library": "^9.2.0",
+    "googleapis": "^126.0.1",
+    "uuid": "^9.0.1"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.8",
+    "@types/express": "^4.17.21",
+    "@types/node": "^20.10.0",
+    "eslint": "^8.56.0",
+    "jest": "^29.7.0",
+    "node-mocks-http": "^1.14.0",
+    "prettier": "^3.1.0",
+    "sinon": "^17.0.1"
+  }
+}
