@@ -1,11 +1,21 @@
+import dotenv from 'dotenv';
+import path from 'path';
+import { fileURLToPath } from 'url';
+
+// Load environment variables FIRST
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const envPath = path.join(__dirname, '..', '.env');
+const result = dotenv.config({ path: envPath });
+if (result.error) {
+  console.error('Error loading .env file:', result.error.message);
+}
+
+// Now import everything else
 import express from 'express';
 import cors from 'cors';
 import 'express-async-errors';
-import dotenv from 'dotenv';
 import { initializeDatabase } from './database.js';
 import routes from './routes.js';
-
-dotenv.config();
 
 const app = express();
 const port = process.env.BACKEND_PORT || 3001;

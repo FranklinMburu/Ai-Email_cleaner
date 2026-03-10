@@ -421,6 +421,43 @@ function LogsTab({ data }) {
 function LoginPage({ onLogin }) {
   const [loading, setLoading] = React.useState(false);
 
+  React.useEffect(() => {
+    // Listen for OAuth messages from popup
+    const handleOAuthMessage = (event) => {
+      if (event.data && event.data.type === 'oauth_success') {
+        localStorage.setItem('sessionId', event.data.sessionId);
+        localStorage.setItem('userEmail', event.data.userEmail);
+        onLogin(event.data.userEmail);
+      } else if (event.data && event.data.type === 'oauth_error') {
+        alert('Auth error: ' + event.data.error);
+      }
+    };
+
+    // Also check localStorage for fallback
+    const checkLocalStorage = () => {
+      const data = localStorage.getItem('oauth_success');
+      if (data) {
+        try {
+          const parsed = JSON.parse(data);
+          localStorage.removeItem('oauth_success');
+          localStorage.setItem('sessionId', parsed.sessionId);
+          localStorage.setItem('userEmail', parsed.userEmail);
+          onLogin(parsed.userEmail);
+        } catch (err) {
+          console.error('Error parsing oauth_success:', err);
+        }
+      }
+    };
+
+    window.addEventListener('message', handleOAuthMessage);
+    const timer = setInterval(checkLocalStorage, 500);
+
+    return () => {
+      window.removeEventListener('message', handleOAuthMessage);
+      clearInterval(timer);
+    };
+  }, [onLogin]);
+
   const handleConnect = async () => {
     try {
       setLoading(true);
@@ -433,24 +470,11 @@ function LoginPage({ onLogin }) {
       const left = window.screenX + (window.outerWidth - width) / 2;
       const top = window.screenY + (window.outerHeight - height) / 2;
 
-      const popup = window.open(
+      window.open(
         authUrl,
         'Gmail Auth',
         `width=${width},height=${height},left=${left},top=${top}`
       );
-
-      // Listen for callback (in real app, would use window location)
-      window.handleOAuthCallback = async (code) => {
-        popup.close();
-        try {
-          const callbackRes = await api.auth.callback(code);
-          localStorage.setItem('sessionId', callbackRes.data.sessionId);
-          localStorage.setItem('userEmail', callbackRes.data.userEmail);
-          onLogin(callbackRes.data.userEmail);
-        } catch (err) {
-          alert('Auth error: ' + (err.response?.data?.error || err.message));
-        }
-      };
     } catch (err) {
       alert('Error: ' + err.message);
     } finally {

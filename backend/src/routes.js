@@ -28,6 +28,117 @@ router.get('/api/auth/init', (req, res) => {
   }
 });
 
+// Handle Google OAuth redirect (GET with code in query string)
+router.get('/api/auth/callback', async (req, res) => {
+  try {
+    const { code, error } = req.query;
+    
+    if (error) {
+      return res.send(`
+        <html>
+          <head><title>Auth Error</title></head>
+          <body>
+            <h1>Authentication Error</h1>
+            <p>${error}</p>
+            <script>
+              setTimeout(() => {
+                if (window.opener) {
+                  window.opener.postMessage({ type: 'oauth_error', error: '${error}' }, '*');
+                  window.close();
+                }
+              }, 500);
+            </script>
+          </body>
+        </html>
+      `);
+    }
+
+    if (!code) {
+      return res.send(`
+        <html>
+          <head><title>Auth Error</title></head>
+          <body>
+            <h1>Authentication Error</h1>
+            <p>No authorization code received</p>
+            <script>
+              setTimeout(() => {
+                if (window.opener) {
+                  window.opener.postMessage({ type: 'oauth_error', error: 'No code' }, '*');
+                  window.close();
+                }
+              }, 500);
+            </script>
+          </body>
+        </html>
+      `);
+    }
+
+    // Exchange code for tokens
+    const tokens = await exchangeCodeForTokens(code);
+    const userEmail = tokens.id_token
+      ? JSON.parse(Buffer.from(tokens.id_token.split('.')[1], 'base64')).email
+      : 'unknown@gmail.com';
+
+    await storeTokens(userEmail, tokens);
+
+    // Create session
+    const sessionId = `sess_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+    sessions.set(sessionId, userEmail);
+
+    // Store success data in query string and redirect to a success page
+    res.send(`
+      <html>
+        <head><title>Authentication Successful</title></head>
+        <body>
+          <h1>Authentication successful!</h1>
+          <p>This window will close automatically.</p>
+          <script>
+            const data = {
+              type: 'oauth_success',
+              sessionId: '${sessionId}',
+              userEmail: '${userEmail}'
+            };
+            
+            // Try to communicate with opener
+            if (window.opener) {
+              window.opener.postMessage(data, '*');
+              setTimeout(() => { window.close(); }, 1000);
+            } else {
+              // Fallback: store in localStorage (same domain)
+              try {
+                localStorage.setItem('oauth_success', JSON.stringify(data));
+                setTimeout(() => { window.close(); }, 1000);
+              } catch (e) {
+                console.error('Could not store in localStorage:', e);
+              }
+            }
+          </script>
+        </body>
+      </html>
+    `);
+  } catch (error) {
+    console.error('OAuth callback error:', error);
+    res.send(`
+      <html>
+        <head><title>Auth Error</title></head>
+        <body>
+          <h1>Authentication Error</h1>
+          <p>${error.message}</p>
+          <script>
+            setTimeout(() => {
+              if (window.opener) {
+                window.opener.postMessage({ type: 'oauth_error', error: '${error.message}' }, '*');
+                window.close();
+              }
+            }, 500);
+          </script>
+        </body>
+      </html>
+    `);
+  }
+});
+
+// Handle client-side callback (POST with code in body)
 router.post('/api/auth/callback', async (req, res) => {
   try {
     const { code } = req.body;

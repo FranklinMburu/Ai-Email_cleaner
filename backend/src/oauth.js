@@ -2,13 +2,26 @@ import { google } from 'googleapis';
 import { getDatabase } from './database.js';
 import { encryptToken, decryptToken } from './encryption.js';
 
-const oauth2Client = new google.auth.OAuth2(
-  process.env.GOOGLE_CLIENT_ID,
-  process.env.GOOGLE_CLIENT_SECRET,
-  process.env.GOOGLE_REDIRECT_URI
-);
+let oauth2Client;
+
+function getOAuth2Client() {
+  if (!oauth2Client) {
+    oauth2Client = new google.auth.OAuth2(
+      process.env.GOOGLE_CLIENT_ID,
+      process.env.GOOGLE_CLIENT_SECRET,
+      process.env.GOOGLE_REDIRECT_URI
+    );
+    console.log('OAuth credentials loaded:', {
+      clientId: process.env.GOOGLE_CLIENT_ID ? '✓ Loaded' : 'MISSING',
+      clientSecret: process.env.GOOGLE_CLIENT_SECRET ? '✓ Loaded' : 'MISSING',
+      redirectUri: process.env.GOOGLE_REDIRECT_URI ? '✓ Loaded' : 'MISSING',
+    });
+  }
+  return oauth2Client;
+}
 
 export function getAuthUrl() {
+  const oauth2Client = getOAuth2Client();
   const scopes = [
     'https://www.googleapis.com/auth/gmail.metadata',
     'https://www.googleapis.com/auth/gmail.modify',
@@ -16,7 +29,7 @@ export function getAuthUrl() {
     'https://www.googleapis.com/auth/userinfo.email',
   ];
 
-  return oauth2Client.generateAuthUrl({
+  return getOAuth2Client().generateAuthUrl({
     access_type: 'offline',
     scope: scopes,
     prompt: 'consent',
@@ -24,7 +37,7 @@ export function getAuthUrl() {
 }
 
 export async function exchangeCodeForTokens(code) {
-  const { tokens } = await oauth2Client.getToken(code);
+  const { tokens } = await getOAuth2Client().getToken(code);
   return tokens;
 }
 
@@ -43,13 +56,14 @@ export async function getGmailClient(userEmail) {
     accessToken = refreshedTokens.access_token;
   }
 
-  oauth2Client.setCredentials({ access_token: accessToken });
-  return google.gmail({ version: 'v1', auth: oauth2Client });
+  getOAuth2Client().setCredentials({ access_token: accessToken });
+  return google.gmail({ version: 'v1', auth: getOAuth2Client() });
 }
 
 export async function refreshTokens(refreshToken) {
-  oauth2Client.setCredentials({ refresh_token: refreshToken });
-  const { credentials } = await oauth2Client.refreshAccessToken();
+  const client = getOAuth2Client();
+  client.setCredentials({ refresh_token: refreshToken });
+  const { credentials } = await client.refreshAccessToken();
   return credentials;
 }
 
