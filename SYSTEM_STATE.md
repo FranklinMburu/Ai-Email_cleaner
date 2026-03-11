@@ -1,8 +1,9 @@
 # Gmail Inbox Cleanup - System State Report
 
 **Last Updated:** March 11, 2026  
-**Status:** Operational (Demo v0.1)  
-**Git Commit:** 85f627d (OAuth fixes and encryption key corrections)
+**Status:** v0.2 (Security & Persistence Hardened)  
+**Git Commit:** 960e7d1 (Phase 1: Security & Persistence Hardening)  
+**Previous Commit:** 85f627d (OAuth fixes)
 
 ---
 
@@ -84,26 +85,14 @@ A Node.js/React application for bulk Gmail inbox management with rule-based emai
 
 ## Known Critical Issues
 
-### 1. Approval Token Not Validated
-**File:** `backend/src/routes.js` (POST /api/operation/execute)  
-**Issue:** approvalToken parameter checked for presence but value never verified  
-**Risk:** Any string passes as valid approval token; attackers could execute operations without legitimate user approval  
-**Impact:** Approval workflow defeated  
-**Status:** Exploitable in current form
+### ~~1. Approval Token Not Validated~~ ✅ FIXED (Phase 1)
+**Fix:** Approval tokens now cryptographically validated using HMAC-SHA256. Token is generated as hash(operationId::operationType::userEmail) during dry-run and must match on execute.
 
-### 2. Sessions Stored In-Memory Only
-**File:** `backend/src/routes.js`  
-**Issue:** Sessions stored in `Map()` object in Node process memory  
-**Risk:** All user sessions lost on server restart  
-**Impact:** Users must re-authenticate after any deployment  
-**Status:** Confirmed limitation
+### ~~2. Sessions Stored In-Memory Only~~ ✅ FIXED (Phase 1)
+**Fix:** Sessions now persisted to SQLite with 24-hour TTL. Survive server restarts. Expired sessions automatically cleaned up.
 
-### 3. Encryption Fallback Key
-**File:** `backend/src/encryption.js`  
-**Issue:** TOKEN_ENCRYPTION_KEY malformed → uses all-zeros fallback key `'0'.repeat(64)`  
-**Risk:** Stored tokens not actually encrypted (zero key means predictable encryption)  
-**Impact:** Tokens vulnerable if database breached  
-**Status:** Currently working with proper 64-char hex key in .env, but fallback exists
+### ~~3. Encryption Fallback Key~~ ✅ FIXED (Phase 1)
+**Fix:** Removed zero-key fallback. getEncryptionKey() now throws error if TOKEN_ENCRYPTION_KEY is invalid or missing. Fail-fast behavior ensures no silent encryption failures.
 
 ---
 
@@ -263,16 +252,97 @@ npm test
 
 ## Recommended Next Phase
 
-**Priority: Security & Persistence Hardening (v0.2)**
+**Priority: Frontend Modularization & Data Export (v0.3)**
 
-**Critical Fixes (6-8 hours):**
-1. ✅ Validate approval tokens (add signature or timestamp verification)
-2. ✅ Migrate sessions to SQLite (add session table, TTL, cleanup job)
-3. ✅ Add request input validation middleware
-4. ✅ Add startup environment variable validation
-5. ✅ Remove encryption fallback key (fail hard if key malformed)
+**Feature Development (8-12 hours):**
+1. Split 510-line Dashboard.js into separate components (LoginPage, OverviewTab, RecommendationsTab, ActionsTab, LogsTab)
+2. Implement undo capability (wire state-machine FSM to operations table)
+3. Add data export (CSV/JSON) for audit trail and cleaned email logs
+4. Frontend pagination for logs/recommendations (prevent UI hang on large datasets)
+5. Frontend search/filter for logs and recommendations
 
-**After v0.2:** Consider undo capability, data export, frontend modularization
+**Production Hardening (4-6 hours):**
+1. Add rate limiting on Gmail API calls
+2. implement session rotation (new session token after each operation)
+3. Add health check with status of database, Gmail API, encryption
+4. Add request logging/audit middleware for compliance
+
+---
+
+# Phase 1 Implementation Details (Completed)
+
+## Session Persistence
+
+**What Changed:**
+- Added `sessions` table to SQLite schema with `id`, `user_email`, `created_at`, `expires_at`
+- Moved sessions from in-memory `Map()` to database storage
+- Sessions now survive server restarts and deployments
+- 24-hour TTL enforced; expired sessions auto-deleted on access or cleanup
+
+**How It Works:**
+```javascript
+// During OAuth callback
+const sessionId = createSession(userEmail);
+// Creates entry in sessions table with expires_at = now + 24h
+
+// On subsequent requests
+const userEmail = validateSessionAndGetUser(sessionId);
+// Checks expires_at < now; deletes if expired; returns userEmail if valid
+```
+
+**Index Added:**
+- `idx_sessions_expires_at` on `sessions(expires_at)` for efficient cleanup queries
+
+## Approval Token Validation
+
+**What Changed:**
+- Dry-run endpoint (/api/operation/dryrun) now returns `approvalToken` in response
+- Execute endpoint validates token using constant-time comparison
+- Invalid token returns HTTP 403 Forbidden
+
+**Token Generation:**
+- HMAC-SHA256 hash of `${operationId}::${operationType}::${userEmail}`
+- Reuses TOKEN_ENCRYPTION_KEY as HMAC secret
+- Deterministic: same inputs always produce same token
+
+**Token Validation:**
+- Compare provided token with regenerated token
+- Use `crypto.timingSafeEqual()` to prevent timing attacks
+- Length check first to handle malformed tokens safely
+
+## Environment Validation
+
+**New config.js Module:**
+- `validateEnvironment()` function runs on server startup
+- Checks for required vars: GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, GOOGLE_REDIRECT_URI, TOKEN_ENCRYPTION_KEY
+- Validates TOKEN_ENCRYPTION_KEY format (64 hex characters = 32 bytes)
+- Exits process with clear error message if validation fails
+
+## Input Validation
+
+**Added Middleware:**
+- `validateSyncPayload`: checks mode in ['incremental', 'full']
+- `validateDryRunPayload`: checks operationType, categories array, labelName
+- Both middleware attached to respective POST endpoints
+- Invalid input returns HTTP 400 with specific error message
+
+## Testing
+
+**New Test Suite:** `backend/tests/session-persistence.test.js`
+- 16 tests covering:
+  - Session creation and storage
+  - Session validation and retrieval
+  - Session expiry and cleanup
+  - Approval token generation (deterministic)
+  - Approval token validation (correct/incorrect)
+  - Encryption key validation (valid/invalid)
+
+**All 16 tests passing:**
+```
+# tests 16
+# pass 16
+# fail 0
+```
 
 ---
 
