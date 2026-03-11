@@ -10,6 +10,15 @@ if (result.error) {
   console.error('Error loading .env file:', result.error.message);
 }
 
+// Validate environment variables (must happen before any other imports)
+import { validateEnvironment } from './config.js';
+try {
+  validateEnvironment();
+} catch (error) {
+  console.error('❌ Startup failed:', error.message);
+  process.exit(1);
+}
+
 // Now import everything else
 import express from 'express';
 import cors from 'cors';

@@ -15,12 +15,20 @@ if (!fs.existsSync(dataDir)) {
 let db = null;
 
 export function initializeDatabase() {
-  if (!db) {
-    db = new Database(dbPath);
-    db.pragma('journal_mode = WAL');
-    db.pragma('foreign_keys = ON');
-    createTables();
+  if (db) {
+    // If already initialized, close and reinitialize
+    try {
+      db.close();
+    } catch (e) {
+      // Ignore errors on close
+    }
+    db = null;
   }
+  
+  db = new Database(dbPath);
+  db.pragma('journal_mode = WAL');
+  db.pragma('foreign_keys = ON');
+  createTables();
   return db;
 }
 
@@ -43,6 +51,17 @@ function createTables() {
       updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       revoked_at DATETIME
     );
+
+    CREATE TABLE IF NOT EXISTS sessions (
+      id TEXT PRIMARY KEY,
+      user_email TEXT NOT NULL,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      expires_at DATETIME NOT NULL,
+      FOREIGN KEY (user_email) REFERENCES oauth_tokens(user_email) ON DELETE CASCADE
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_email);
+    CREATE INDEX IF NOT EXISTS idx_sessions_expires_at ON sessions(expires_at);
 
     CREATE TABLE IF NOT EXISTS message_metadata (
       id TEXT PRIMARY KEY,

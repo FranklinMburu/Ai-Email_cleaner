@@ -4,18 +4,46 @@ import { syncMetadata, clearMetadataCache } from './sync.js';
 import { generateRecommendations } from './categorize.js';
 import { createDryRunOperation, executeOperation, getOperationLog } from './operations.js';
 import { getDatabase } from './database.js';
+import {
+  createSession,
+  validateSessionAndGetUser,
+  destroySession,
+  generateApprovalToken,
+  validateApprovalToken,
+} from './session-manager.js';
 
 const router = express.Router();
 
-// Session middleware (simple in-memory for demo)
-const sessions = new Map();
-
+// Middleware: Extract and validate session from x-session-id header
 function getCurrentUserEmail(req) {
   const sessionId = req.headers['x-session-id'];
-  if (!sessionId || !sessions.has(sessionId)) {
-    throw new Error('No active session');
+  return validateSessionAndGetUser(sessionId);
+}
+
+// Middleware: Validate JSON payload structure for mutation endpoints
+function validateSyncPayload(req, res, next) {
+  const { mode } = req.body || {};
+  if (mode && !['incremental', 'full'].includes(mode)) {
+    return res.status(400).json({ error: 'Invalid mode. Must be "incremental" or "full".' });
   }
-  return sessions.get(sessionId);
+  next();
+}
+
+function validateDryRunPayload(req, res, next) {
+  const { operationType, categories } = req.body || {};
+  if (!operationType) {
+    return res.status(400).json({ error: 'operationType is required' });
+  }
+  if (!['LABEL', 'ARCHIVE', 'TRASH'].includes(operationType)) {
+    return res.status(400).json({ error: 'Invalid operationType. Must be LABEL, ARCHIVE, or TRASH.' });
+  }
+  if (!Array.isArray(categories) || categories.length === 0) {
+    return res.status(400).json({ error: 'categories must be a non-empty array' });
+  }
+  if (operationType === 'LABEL' && !req.body.labelName) {
+    return res.status(400).json({ error: 'labelName is required for LABEL operations' });
+  }
+  next();
 }
 
 // OAuth endpoints
@@ -81,9 +109,8 @@ router.get('/api/auth/callback', async (req, res) => {
 
     await storeTokens(userEmail, tokens);
 
-    // Create session
-    const sessionId = `sess_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
-    sessions.set(sessionId, userEmail);
+    // Create persistent database session
+    const sessionId = createSession(userEmail);
 
     // Store success data in query string and redirect to a success page
     res.send(`
@@ -153,9 +180,8 @@ router.post('/api/auth/callback', async (req, res) => {
 
     await storeTokens(userEmail, tokens);
 
-    // Create session
-    const sessionId = `sess_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
-    sessions.set(sessionId, userEmail);
+    // Create persistent database session
+    const sessionId = createSession(userEmail);
 
     res.json({
       sessionId,
@@ -172,7 +198,8 @@ router.post('/api/auth/disconnect', (req, res) => {
   try {
     const userEmail = getCurrentUserEmail(req);
     revokeToken(userEmail);
-    sessions.delete(req.headers['x-session-id']);
+    const sessionId = req.headers['x-session-id'];
+    destroySession(sessionId);
     res.json({ status: 'disconnected' });
   } catch (error) {
     res.status(401).json({ error: error.message });
@@ -180,7 +207,7 @@ router.post('/api/auth/disconnect', (req, res) => {
 });
 
 // Sync endpoints
-router.post('/api/sync', async (req, res) => {
+router.post('/api/sync', validateSyncPayload, async (req, res) => {
   try {
     const userEmail = getCurrentUserEmail(req);
     const { mode = 'incremental' } = req.body;
@@ -241,7 +268,7 @@ router.get('/api/inbox-overview', (req, res) => {
 });
 
 // Operations endpoints
-router.post('/api/operation/dryrun', async (req, res) => {
+router.post('/api/operation/dryrun', validateDryRunPayload, async (req, res) => {
   try {
     const userEmail = getCurrentUserEmail(req);
     const { operationType, categories, labelName } = req.body;
@@ -263,9 +290,16 @@ router.post('/api/operation/execute', async (req, res) => {
     const userEmail = getCurrentUserEmail(req);
     const { operationId, operationType, categories, labelName, approvalToken } = req.body;
 
-    if (!approvalToken) {
-      return res.status(403).json({ error: 'Approval required' });
+    if (!operationId || !operationType) {
+      return res.status(400).json({ error: 'operationId and operationType required' });
     }
+
+    if (!approvalToken || typeof approvalToken !== 'string') {
+      return res.status(403).json({ error: 'Valid approval token required' });
+    }
+
+    // Validate approval token against operation details
+    validateApprovalToken(approvalToken, operationId, operationType, userEmail);
 
     const result = await executeOperation(userEmail, {
       operationId,
@@ -276,7 +310,7 @@ router.post('/api/operation/execute', async (req, res) => {
 
     res.json(result);
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    res.status(403).json({ error: error.message });
   }
 });
 

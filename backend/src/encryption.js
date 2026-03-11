@@ -40,13 +40,21 @@ export function decryptToken(encryptedToken) {
 function getEncryptionKey() {
   const keyHex = process.env.TOKEN_ENCRYPTION_KEY;
   if (!keyHex || keyHex.length !== 64) {
-    console.warn(
-      'TOKEN_ENCRYPTION_KEY not set or invalid. Tokens stored in plaintext (development only).'
+    throw new Error(
+      `Invalid or missing TOKEN_ENCRYPTION_KEY. ` +
+      `Must be 64 hexadecimal characters (32 bytes). ` +
+      `Current length: ${keyHex?.length || 0}. ` +
+      `Set TOKEN_ENCRYPTION_KEY in your .env file.`
     );
-    // For development: return a fixed key
-    return Buffer.from('0'.repeat(64), 'hex');
   }
-  return Buffer.from(keyHex, 'hex');
+  try {
+    return Buffer.from(keyHex, 'hex');
+  } catch (error) {
+    throw new Error(
+      `TOKEN_ENCRYPTION_KEY contains invalid hexadecimal characters. ` +
+      `Must be 64 valid hex characters (0-9, a-f).`
+    );
+  }
 }
 
 export function generateEncryptionKey() {

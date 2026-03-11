@@ -1,12 +1,18 @@
 import { v4 as uuidv4 } from 'uuid';
 import { getDatabase } from './database.js';
 import { getGmailClient } from './oauth.js';
+import { generateApprovalToken } from './session-manager.js';
 
 export async function createDryRunOperation(userEmail, operationConfig) {
   const { operationType, categories, batchSize = 500, includeProtected = false } = operationConfig;
 
   if (!['LABEL', 'ARCHIVE', 'TRASH'].includes(operationType)) {
     throw new Error('Invalid operation type');
+  }
+
+  // Validate categories is an array
+  if (!Array.isArray(categories) || categories.length === 0) {
+    throw new Error('categories must be a non-empty array');
   }
 
   const db = getDatabase();
@@ -85,7 +91,7 @@ export async function createDryRunOperation(userEmail, operationConfig) {
 
   return {
     ...dryRunResult,
-    approvalToken: generateApprovalToken(dryRunResult.operationId),
+    approvalToken: generateApprovalToken(dryRunResult.operationId, operationType, userEmail),
   };
 }
 
