@@ -9,9 +9,9 @@
 
 ## Executive Summary
 
-Gmail Inbox Cleanup is a production-ready v0.2 system for bulk Gmail management with comprehensive security hardening in Phase 1. The system features persistent user sessions, cryptographically validated operations, and fail-fast configuration validation.
+Gmail Inbox Cleanup is a v0.2 system for bulk Gmail management with Phase 1 security hardening. The system features persistent user sessions, cryptographically validated operations, and fail-fast configuration validation.
 
-**System Status:** ✅ READY FOR STAGING  
+**System Status:** ✅ READY FOR STAGING (single-user development verified)  
 **Current Deployment:** Backend running on port 3001, Frontend on port 3000  
 **Database:** SQLite with 7 tables and proper indexing  
 **Test Coverage:** 16/16 Phase 1 tests passing  
@@ -48,7 +48,7 @@ Gmail Inbox Cleanup is a production-ready v0.2 system for bulk Gmail management 
 
 | Table | Purpose | Fields | Indexes |
 |-------|---------|--------|---------|
-| `oauth_tokens` | Encrypted GitHub credentials | id, user_email (UNIQUE), refresh_token, access_token, token_expiry_ms, created_at, updated_at, revoked_at | PRIMARY KEY(id) |
+| `oauth_tokens` | Encrypted Google OAuth tokens | id, user_email (UNIQUE), refresh_token, access_token, token_expiry_ms, created_at, updated_at, revoked_at | PRIMARY KEY(id) |
 | `sessions` | User sessions with TTL | id (PK), user_email, created_at, expires_at | idx_sessions_user, idx_sessions_expires_at |
 | `message_metadata` | Gmail message headers | id, user_email, message_id, thread_id, from_addr, to_addr, subject, snippet, internal_date_ms, size_estimate, label_ids, is_unread, is_starred, synced_at | idx_messages_user, idx_messages_date, idx_messages_from |
 | `sync_state` | Incremental sync state | id, user_email (UNIQUE), history_id, last_sync_at, last_internal_date_ms | - |
@@ -280,7 +280,7 @@ node --test tests/session-persistence.test.js
 
 ### ✅ Email Synchronization
 - Incremental sync via Gmail history API with historyId tracking
-- Full sync fallback (40,000+ email limit)
+- Full sync fallback (subject to Gmail API quotas and pagination limits)
 - Batch fetching in increments of 100
 - Stores: message_id, thread_id, from, subject, snippet, internal_date_ms, labels, unread, starred
 
@@ -338,7 +338,7 @@ node --test tests/session-persistence.test.js
 ### 4. Encryption Hardening ✅
 - Removed insecure zero-key fallback
 - getEncryptionKey() throws error if key invalid/missing
-- Proper buffer length checking in token validation
+- Regex validation enforces 64 hexadecimal characters for encryption key
 
 ### 5. Input Validation ✅
 - validateSyncPayload middleware
@@ -353,7 +353,7 @@ node --test tests/session-persistence.test.js
 - Email deletion (delete scope not requested from Gmail)
 - Undo/revert capability (state machine scaffolded, not wired)
 - Data export (CSV/JSON)
-- Frontend pagination (will hang on large datasets)
+- Frontend pagination (not implemented; performance untested on large datasets)
 - Frontend search/filter
 - Responsive CSS design
 - Session rotation (could be future enhancement)
@@ -369,14 +369,15 @@ node --test tests/session-persistence.test.js
 ## Deployment Status
 
 **Current Environment:** Development (localhost:3000 and localhost:3001)  
-**Ready for:** Staging (with proper .env configuration)  
+**Ready for:** Single-developer staging with proper .env configuration  
 **Not Ready for:** Production multi-user (sessions persist per server, not cross-server)  
-**Database:** SQLite (suitable for <100 concurrent users)  
+**Database:** SQLite (not suitable for concurrent high-load scenarios)  
 
-### System Resources Used
-- Memory: ~150MB (backend) + ~80MB (frontend)  
-- Disk: ~10MB database (highly variable with email sync size)  
-- Network: Constrained by Gmail API quotas (1000 requests/second shared)  
+### System Resource Profile
+*Note: Resource estimates below are not measured in production:*
+- Memory: estimated ~150-200MB (backend + frontend combined)  
+- Disk: database grows with email sync size (no measured baseline available)  
+- Network: Constrained by Gmail API quotas per authenticated user  
 
 ---
 
@@ -435,5 +436,5 @@ node --test tests/session-persistence.test.js
 ---
 
 **Report Generated:** March 11, 2026  
-**Status:** ✅ VERIFIED AND COMPLETE  
-**Confidence Level:** HIGH (code-inspected, tests passing)
+**Status:** ✅ Code-inspected and tested in development  
+**Confidence Level:** MEDIUM (unit tests passing; staging deployment untested)
