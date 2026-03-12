@@ -3,6 +3,7 @@ import api from '../../services/api';
 import { ErrorBanner } from '../common/ErrorBanner';
 import { Toast } from '../common/Toast';
 import { DashboardTabs } from './DashboardTabs';
+import { Sidebar } from './Sidebar';
 import { useNotifications } from '../../hooks/useNotifications';
 
 /**
@@ -41,12 +42,28 @@ export function DashboardLayout({ userEmail, onLogout, notifications }) {
       setSyncing(true);
       setError(null);
       const res = await api.sync.start('incremental');
+      
+      if (res.data.messageCount === 0) {
+        notifications.warning('Sync completed but no messages found. Your inbox may be empty or still loading.');
+      } else {
+        notifications.success(`Sync completed! ${res.data.messageCount} messages synced.`);
+      }
       setData((prev) => ({ ...prev, syncResult: res.data }));
-      notifications.success(`Sync completed! ${res.data.messageCount} messages synced.`);
     } catch (err) {
-      const errorMsg = err.response?.data?.error || err.message;
+      let errorMsg = err.response?.data?.error || err.message;
+      
+      // Enhance error messages for common failures
+      if (errorMsg.includes('authentication') || errorMsg.includes('token') || errorMsg.includes('reconnect')) {
+        errorMsg = `Gmail authentication issue: ${errorMsg}. Please disconnect and reconnect your account.`;
+      } else if (errorMsg.includes('timeout') || errorMsg.includes('timed out')) {
+        errorMsg = `Sync took too long (timeout). Please try again or check your network connection.`;
+      } else if (errorMsg.includes('Network')) {
+        errorMsg = `Network error: Cannot reach Gmail. Please check your internet connection and try again.`;
+      }
+      
       setError(errorMsg);
       notifications.error('Sync failed: ' + errorMsg);
+      console.error('Sync error details:', err);
     } finally {
       setSyncing(false);
     }
@@ -91,32 +108,40 @@ export function DashboardLayout({ userEmail, onLogout, notifications }) {
 
   return (
     <div className="dashboard">
-      <header className="dashboard-header">
-        <h1>Gmail Inbox Cleanup</h1>
-        <div className="header-info">
-          <span>{userEmail}</span>
-          <button onClick={handleDisconnect} className="btn btn-secondary">
-            Disconnect
-          </button>
-        </div>
-      </header>
-
-      {error && <ErrorBanner error={error} onClose={() => setError(null)} />}
-
-      <Toast notifications={notifications.notifications} onRemove={notifications.removeNotification} />
-
-      <DashboardTabs
-        tab={tab}
+      <Sidebar 
+        currentTab={tab}
         setTab={setTab}
-        data={data}
-        loading={loading}
-        syncing={syncing}
-        notifications={notifications}
-        refreshLogs={logsRefreshTrigger}
-        onSync={handleSync}
-        onGenerateReport={handleGenerateReport}
-        onOperationExecuted={handleOperationExecuted}
+        userEmail={userEmail}
+        onLogout={handleDisconnect}
       />
+
+      <div className="dashboard-content">
+        <header className="dashboard-header">
+          <h1>Gmail Inbox Cleanup</h1>
+          <div className="header-info">
+            <span>{userEmail}</span>
+          </div>
+        </header>
+
+        {error && <ErrorBanner error={error} onClose={() => setError(null)} />}
+
+        <Toast notifications={notifications.notifications} onRemove={notifications.removeNotification} />
+
+        <div className="tab-content">
+          <DashboardTabs
+            tab={tab}
+            setTab={setTab}
+            data={data}
+            loading={loading}
+            syncing={syncing}
+            notifications={notifications}
+            refreshLogs={logsRefreshTrigger}
+            onSync={handleSync}
+            onGenerateReport={handleGenerateReport}
+            onOperationExecuted={handleOperationExecuted}
+          />
+        </div>
+      </div>
     </div>
   );
 }

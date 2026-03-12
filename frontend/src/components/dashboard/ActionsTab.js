@@ -3,6 +3,7 @@ import api from '../../services/api';
 import { EmptyState } from '../common/EmptyState';
 import { LoadingState } from '../common/LoadingState';
 import { ConfirmDialog } from '../common/ConfirmDialog';
+import { PresetManager } from './PresetManager';
 import { truncateText } from '../../utils/formatters';
 
 /**
@@ -73,6 +74,17 @@ export function ActionsTab({ data, onOperationExecuted, notifications }) {
     }
   };
 
+  const handleLoadOperationPreset = (preset) => {
+    // Apply the saved operation preset
+    if (preset && preset.config) {
+      setActionType(preset.config.operationType || 'ARCHIVE');
+      if (preset.config.categoryId) {
+        setSelectedCategory(preset.config.categoryId);
+      }
+      notifications.success(`Loaded preset: ${preset.name}`);
+    }
+  };
+
   if (!report) {
     return (
       <div className="tab-pane">
@@ -86,6 +98,8 @@ export function ActionsTab({ data, onOperationExecuted, notifications }) {
 
   return (
     <div className="tab-pane">
+      <PresetManager presetType="operations" onLoadPreset={handleLoadOperationPreset} />
+
       <h2>Action Composer</h2>
 
       <div className="composer-section">

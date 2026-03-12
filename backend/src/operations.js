@@ -262,7 +262,3 @@ export function getOperationLog(userEmail, limit = 50) {
     }));
 }
 
-function generateApprovalToken(operationId) {
-  // Simple token: operation_id + timestamp
-  return Buffer.from(`${operationId}:${Date.now()}`).toString('base64');
-}

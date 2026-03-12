@@ -1,4 +1,4 @@
-import { getGmailClient } from './oauth.js';
+import { getGmailClient, validateTokenValidity } from './oauth.js';
 import { getDatabase } from './database.js';
 
 const BATCH_SIZE = 100;
@@ -10,21 +10,41 @@ export async function syncMetadata(userEmail, options = {}) {
   console.log(`[Sync] Starting ${mode} sync for ${userEmail}...`);
 
   const db = getDatabase();
-  const gmail = await getGmailClient(userEmail);
+  
+  // Validate token before attempting any sync
+  const tokenValidity = validateTokenValidity(userEmail);
+  if (!tokenValidity.isValid) {
+    console.warn(`[Sync] Pre-sync validation: ${tokenValidity.message}`);
+  }
+
+  let gmail;
+  try {
+    gmail = await getGmailClient(userEmail);
+    console.log(`[Sync] Gmail client ready for ${userEmail}`);
+  } catch (authError) {
+    console.error(`[Sync] Authentication failed for ${userEmail}:`, authError.message);
+    throw authError;
+  }
 
   try {
     let messageIds = [];
 
     if (mode === 'incremental') {
+      console.log(`[Sync] Attempting incremental sync for ${userEmail}`);
       messageIds = await fetchIncrementalChanges(gmail, userEmail, db);
     } else {
+      console.log(`[Sync] Attempting full sync for ${userEmail}`);
       messageIds = await fetchFullMetadata(gmail, userEmail, db, limit);
     }
 
-    // Fetch detailed metadata for batches
-    await fetchMessageMetadataInBatches(gmail, userEmail, messageIds);
+    console.log(`[Sync] Got ${messageIds.length} message IDs to fetch for ${userEmail}`);
 
-    // Update sync state
+    // Fetch detailed metadata for batches
+    console.log(`[Sync] Starting metadata fetch for ${messageIds.length} messages...`);
+    const insertedCount = await fetchMessageMetadataInBatches(gmail, userEmail, messageIds);
+    console.log(`[Sync] Metadata fetch completed - inserted ${insertedCount} messages`);
+
+    // Only update sync state AFTER successful metadata persistence
     const syncState = db.prepare('SELECT * FROM sync_state WHERE user_email = ?').get(userEmail);
     if (syncState) {
       db.prepare(
@@ -40,10 +60,10 @@ export async function syncMetadata(userEmail, options = {}) {
       .prepare('SELECT COUNT(*) as count FROM message_metadata WHERE user_email = ?')
       .get(userEmail).count;
 
-    console.log(`[Sync] Complete for ${userEmail}. Total messages: ${count}`);
+    console.log(`[Sync] Complete for ${userEmail}. Total messages in DB after sync: ${count}`);
     return { status: 'completed', messageCount: count };
   } catch (error) {
-    console.error('[Sync] Error:', error.message);
+    console.error('[Sync] Sync failed for', userEmail, ':', error.message);
     throw error;
   }
 }
@@ -52,13 +72,13 @@ async function fetchIncrementalChanges(gmail, userEmail, db) {
   const syncState = db.prepare('SELECT * FROM sync_state WHERE user_email = ?').get(userEmail);
 
   if (!syncState || !syncState.history_id) {
-    console.log('[Sync] No previous sync state, performing full sync');
+    console.log(`[Sync] No previous sync state for ${userEmail}, falling back to full sync`);
     return fetchFullMetadata(gmail, userEmail, db, 40000);
   }
 
   try {
     const historyId = syncState.history_id;
-    console.log(`[Sync] Using historyId: ${historyId}`);
+    console.log(`[Sync.incremental] Using historyId: ${historyId} for ${userEmail}`);
 
     const historyList = await gmail.users.history.list({
       userId: 'me',
@@ -66,14 +86,18 @@ async function fetchIncrementalChanges(gmail, userEmail, db) {
       fields: 'history(messagesAdded,messagesDeleted,labelsAdded,labelsRemoved),historyId',
     });
 
+    console.log(`[Sync.incremental] History API returned ${historyList.data.history ? historyList.data.history.length : 0} history events`);
+
     const changedMessageIds = new Set();
 
     if (historyList.data.history) {
       for (const event of historyList.data.history) {
         if (event.messagesAdded) {
+          console.log(`[Sync.incremental] Found ${event.messagesAdded.length} messagesAdded`);
           event.messagesAdded.forEach((m) => changedMessageIds.add(m.message.id));
         }
         if (event.messagesDeleted) {
+          console.log(`[Sync.incremental] Found ${event.messagesDeleted.length} messagesDeleted`);
           event.messagesDeleted.forEach((m) => {
             db.prepare('DELETE FROM message_metadata WHERE user_email = ? AND message_id = ?').run(
               userEmail,
@@ -82,10 +106,15 @@ async function fetchIncrementalChanges(gmail, userEmail, db) {
           });
         }
         if (event.labelsAdded || event.labelsRemoved) {
+          const addedCount = event.labelsAdded?.length || 0;
+          const removedCount = event.labelsRemoved?.length || 0;
+          console.log(`[Sync.incremental] Found ${addedCount} labelsAdded, ${removedCount} labelsRemoved`);
           event.labelsAdded?.forEach((m) => changedMessageIds.add(m.message.id));
           event.labelsRemoved?.forEach((m) => changedMessageIds.add(m.message.id));
         }
       }
+    } else {
+      console.log(`[Sync.incremental] No history array in response`);
     }
 
     // Update historyId for next sync
@@ -94,8 +123,10 @@ async function fetchIncrementalChanges(gmail, userEmail, db) {
         historyList.data.historyId,
         userEmail
       );
+      console.log(`[Sync.incremental] Updated historyId to ${historyList.data.historyId}`);
     }
 
+    console.log(`[Sync.incremental] Returning ${changedMessageIds.size} changed message IDs`);
     return Array.from(changedMessageIds);
   } catch (error) {
     if (error.code === 404 || error.message.includes('notFound')) {
@@ -107,7 +138,7 @@ async function fetchIncrementalChanges(gmail, userEmail, db) {
 }
 
 async function fetchFullMetadata(gmail, userEmail, db, limit) {
-  console.log(`[Sync] Fetching full metadata, limit: ${limit}`);
+  console.log(`[Sync.full] Fetching full metadata, limit: ${limit}`);
 
   const messageIds = [];
   let pageToken = null;
@@ -121,22 +152,31 @@ async function fetchFullMetadata(gmail, userEmail, db, limit) {
       fields: 'messages(id),nextPageToken,resultSizeEstimate',
     });
 
+    console.log(`[Sync.full] Page request returned ${listRes.data.messages ? listRes.data.messages.length : 0} message IDs`);
+
     if (!listRes.data.messages) {
+      console.log(`[Sync.full] No messages in response, breaking`);
       break;
     }
 
     messageIds.push(...listRes.data.messages.map((m) => m.id));
     totalFetched += listRes.data.messages.length;
 
+    console.log(`[Sync.full] Total fetched so far: ${totalFetched}`);
+
     if (!listRes.data.nextPageToken) {
+      console.log(`[Sync.full] No nextPageToken, done paginating`);
       break;
     }
 
     pageToken = listRes.data.nextPageToken;
   }
 
+  console.log(`[Sync.full] Total message IDs collected: ${messageIds.length}`);
+
   // Store latest historyId
   const profileRes = await gmail.users.getProfile({ userId: 'me', fields: 'historyId' });
+  console.log(`[Sync.full] Got profile with historyId: ${profileRes.data.historyId}`);
   if (profileRes.data.historyId) {
     const syncState = db.prepare('SELECT * FROM sync_state WHERE user_email = ?').get(userEmail);
     if (syncState) {
@@ -156,9 +196,14 @@ async function fetchFullMetadata(gmail, userEmail, db, limit) {
 
 async function fetchMessageMetadataInBatches(gmail, userEmail, messageIds) {
   const db = getDatabase();
+  let totalInserted = 0;
+
+  console.log(`[Sync.metadata] Starting to fetch metadata for ${messageIds.length} messages in batches of ${BATCH_SIZE}`);
 
   for (let i = 0; i < messageIds.length; i += BATCH_SIZE) {
     const batch = messageIds.slice(i, Math.min(i + BATCH_SIZE, messageIds.length));
+    const batchNum = Math.floor(i / BATCH_SIZE) + 1;
+    console.log(`[Sync.metadata] Batch ${batchNum}: fetching ${batch.length} messages`);
 
     const results = await gmail.users.messages.batchGet({
       userId: 'me',
@@ -166,6 +211,8 @@ async function fetchMessageMetadataInBatches(gmail, userEmail, messageIds) {
       fields:
         'messages(id,threadId,labelIds,payload/headers,internalDateMs,sizeEstimate,snippet)',
     });
+
+    console.log(`[Sync.metadata] Batch ${batchNum} response has ${results.data.messages ? results.data.messages.length : 0} messages`);
 
     let retries = 0;
     while (retries < 3) {
@@ -178,7 +225,12 @@ async function fetchMessageMetadataInBatches(gmail, userEmail, messageIds) {
         );
 
         const transaction = db.transaction(() => {
-          for (const msg of results.data.messages || []) {
+          let insertCount = 0;
+          if (!results.data.messages) {
+            console.log(`[Sync.metadata] Batch ${batchNum}: no messages to insert`);
+            return 0;
+          }
+          for (const msg of results.data.messages) {
             const headers = msg.payload?.headers || [];
             const fromHeader = headers.find((h) => h.name === 'From') || {};
             const toHeader = headers.find((h) => h.name === 'To') || {};
@@ -203,10 +255,14 @@ async function fetchMessageMetadataInBatches(gmail, userEmail, messageIds) {
               isUnread,
               isStarred
             );
+            insertCount++;
           }
+          return insertCount;
         });
 
-        transaction();
+        const inserted = transaction();
+        totalInserted += inserted;
+        console.log(`[Sync.metadata] Batch ${batchNum} inserted ${inserted} messages (total so far: ${totalInserted})`);
         break;
       } catch (error) {
         if (
@@ -214,7 +270,7 @@ async function fetchMessageMetadataInBatches(gmail, userEmail, messageIds) {
           error.message.includes('database is locked')
         ) {
           retries++;
-          console.log(`[Sync] Database busy, retry ${retries}/3`);
+          console.log(`[Sync.metadata] Database busy, retry ${retries}/3`);
           await new Promise((resolve) => setTimeout(resolve, 100 * retries));
         } else {
           throw error;
@@ -222,6 +278,9 @@ async function fetchMessageMetadataInBatches(gmail, userEmail, messageIds) {
       }
     }
   }
+
+  console.log(`[Sync.metadata] Batch insert complete - total inserted: ${totalInserted}`);
+  return totalInserted;
 }
 
 export async function clearMetadataCache(userEmail) {

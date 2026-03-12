@@ -50,10 +50,28 @@ export async function getGmailClient(userEmail) {
   }
 
   // Check if token is expired and refresh if needed
-  let accessToken = tokenRecord.access_token;
+  let accessToken = decryptToken(tokenRecord.access_token);
+  const refreshToken = decryptToken(tokenRecord.refresh_token);
+  
   if (Date.now() >= tokenRecord.token_expiry_ms) {
-    const refreshedTokens = await refreshTokens(tokenRecord.refresh_token);
-    accessToken = refreshedTokens.access_token;
+    console.log(`[OAuth] Token expired for ${userEmail}, attempting refresh...`);
+    try {
+      const refreshedTokens = await refreshTokensWithTimeout(refreshToken, 10000); // 10s timeout
+      // Save the refreshed tokens back to database
+      await storeTokens(userEmail, refreshedTokens);
+      accessToken = refreshedTokens.access_token;
+      console.log(`[OAuth] Token refreshed and saved for ${userEmail}`);
+    } catch (error) {
+      const errorMsg = error.code === 'ENOTFOUND' 
+        ? 'Network error - cannot reach Google authentication servers'
+        : error.message?.includes('invalid_grant')
+        ? 'Authentication failed - refresh token is invalid or revoked. Please reconnect your Gmail account.'
+        : error.message?.includes('timeout')
+        ? 'Authentication took too long. Please reconnect your Gmail account.'
+        : error.message || 'Unknown authentication error';
+      console.error(`[OAuth] Token refresh failed for ${userEmail}: ${errorMsg}`, error);
+      throw new Error(errorMsg);
+    }
   }
 
   getOAuth2Client().setCredentials({ access_token: accessToken });
@@ -67,10 +85,70 @@ export async function refreshTokens(refreshToken) {
   return credentials;
 }
 
+/**
+ * Refresh tokens with timeout protection
+ * @param {string} refreshToken - The refresh token to use
+ * @param {number} timeoutMs - Timeout in milliseconds (default 10000ms)
+ * @returns {Promise<object>} Credential object with new tokens
+ * @throws {Error} If refresh fails or times out
+ */
+export async function refreshTokensWithTimeout(refreshToken, timeoutMs = 10000) {
+  const client = getOAuth2Client();
+  client.setCredentials({ refresh_token: refreshToken });
+  
+  const refreshPromise = client.refreshAccessToken();
+  const timeoutPromise = new Promise((_, reject) => {
+    setTimeout(() => reject(new Error('Token refresh timeout - Google API did not respond within 10 seconds')), timeoutMs);
+  });
+  
+  const { credentials } = await Promise.race([refreshPromise, timeoutPromise]);
+  return credentials;
+}
+
+/**
+ * Check if a token is valid without attempting to refresh
+ * @param {string} userEmail - User email to check
+ * @returns {object} Validation result: { isValid, expiresIn, message }
+ */
+export function validateTokenValidity(userEmail) {
+  const db = getDatabase();
+  const tokenRecord = db.prepare('SELECT * FROM oauth_tokens WHERE user_email = ?').get(userEmail);
+  
+  if (!tokenRecord) {
+    return { isValid: false, expiresIn: 0, message: 'No authentication token found. Please connect your Gmail account.' };
+  }
+  
+  if (tokenRecord.revoked_at) {
+    return { isValid: false, expiresIn: 0, message: 'Gmail authentication was revoked. Please reconnect your account.' };
+  }
+  
+  const expiresInMs = tokenRecord.token_expiry_ms - Date.now();
+  const expiresInMinutes = Math.round(expiresInMs / 60000);
+  
+  if (expiresInMs <= 0) {
+    return { isValid: false, expiresIn: 0, message: 'Authentication token expired. Refresh will be attempted on next sync.' };
+  }
+  
+  if (expiresInMs < 300000) { // Less than 5 minutes
+    return { isValid: true, expiresIn: expiresInMinutes, message: `Token expires in ${expiresInMinutes} minutes` };
+  }
+  
+  return { isValid: true, expiresIn: expiresInMinutes, message: 'Token is valid' };
+}
+
 export async function storeTokens(userEmail, tokens) {
   const db = getDatabase();
   const tokenId = `token_${userEmail}`;
-  const expiryMs = tokens.expiry_date || Date.now() + tokens.expires_in * 1000;
+  
+  // Calculate expiry: use expiry_date if available, otherwise use expires_in
+  let expiryMs = tokens.expiry_date;
+  if (!expiryMs && tokens.expires_in) {
+    expiryMs = Date.now() + tokens.expires_in * 1000;
+  }
+  if (!expiryMs) {
+    // Default to 1 hour from now if no expiry info
+    expiryMs = Date.now() + 3600 * 1000;
+  }
 
   const encryptedRefreshToken = encryptToken(tokens.refresh_token || '');
   const encryptedAccessToken = encryptToken(tokens.access_token);
@@ -82,6 +160,7 @@ export async function storeTokens(userEmail, tokens) {
   );
 
   stmt.run(tokenId, userEmail, encryptedRefreshToken, encryptedAccessToken, expiryMs);
+  console.log(`[OAuth] Stored tokens for ${userEmail}, expiry: ${new Date(expiryMs).toISOString()}`);
 }
 
 export async function getStoredTokens(userEmail) {

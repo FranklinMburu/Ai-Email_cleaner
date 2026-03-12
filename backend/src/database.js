@@ -138,6 +138,47 @@ function createTables() {
     CREATE INDEX IF NOT EXISTS idx_audit_user ON audit_log(user_email);
     CREATE INDEX IF NOT EXISTS idx_audit_operation ON audit_log(operation_id);
     CREATE INDEX IF NOT EXISTS idx_operations_user ON operations(user_email);
+
+    CREATE TABLE IF NOT EXISTS filter_presets (
+      id TEXT PRIMARY KEY,
+      user_email TEXT NOT NULL,
+      name TEXT NOT NULL,
+      description TEXT,
+      filters TEXT NOT NULL,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (user_email) REFERENCES oauth_tokens(user_email) ON DELETE CASCADE,
+      UNIQUE(user_email, name)
+    );
+
+    CREATE TABLE IF NOT EXISTS operation_presets (
+      id TEXT PRIMARY KEY,
+      user_email TEXT NOT NULL,
+      name TEXT NOT NULL,
+      description TEXT,
+      operation_type TEXT NOT NULL,
+      config TEXT NOT NULL,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (user_email) REFERENCES oauth_tokens(user_email) ON DELETE CASCADE,
+      UNIQUE(user_email, name)
+    );
+
+    CREATE TABLE IF NOT EXISTS sender_controls (
+      id TEXT PRIMARY KEY,
+      user_email TEXT NOT NULL,
+      sender_email TEXT NOT NULL,
+      control_type TEXT NOT NULL,
+      reason TEXT,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (user_email) REFERENCES oauth_tokens(user_email) ON DELETE CASCADE,
+      UNIQUE(user_email, sender_email, control_type)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_filter_presets_user ON filter_presets(user_email);
+    CREATE INDEX IF NOT EXISTS idx_operation_presets_user ON operation_presets(user_email);
+    CREATE INDEX IF NOT EXISTS idx_sender_controls_user ON sender_controls(user_email);
+    CREATE INDEX IF NOT EXISTS idx_sender_controls_email ON sender_controls(sender_email);
   `);
 }
 
